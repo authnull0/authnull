@@ -55,29 +55,33 @@ Container names follow `COMPOSE_PROJECT_NAME` from `.env` (`onprem-<service>-1`)
 Compose reads `.env` from this directory. Production can use a separate file:
 `docker compose --env-file .env.prod up -d` (`.env.prod` is gitignored).
 
-### Required values not present in the committed `.env`
+### Values the customer must fill in
 
-The compose file references these, but `.env` does not define them yet. Without them the UI has
-no working sign-in/logout target and tenant login can't resolve the org:
-
-| Variable | Example | Used for |
-|---|---|---|
-| `SYSTEM_URL` | `https://onprem.example.com` | Public base URL of the API / admin UI |
-| `DOMAIN_URL` | `https://default.acme.example.com` | Tenant site (`<org>` = `ORG_NAME`) |
-| `TENANT_BASE_DOMAIN` | `example.com` | Tenant sites are `default.<org>.<this>`; also the SSO console domain |
-| `SSC_SIGNIN_URL`, `SSC_URL`, `SSC_BASE_URL` | | Self-service console sign-in |
-| `ROOT_URL`, `CLIENT_URL`, `AUTHNULL_LOGOUT_URL` | | Redirect / logout targets |
-| `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGIN` | `example.com`, `https://onprem.example.com` | Passkeys |
-| `TWILIO_FROM_NUMBER` | | SMS. `.env` only has `TWILIO_PHONE`, which the service doesn't read |
-
-`JWT_SECRET` and `INTERNAL_API_KEY` exist in `.env` but are empty. Generate them like this:
+The committed `.env` is a template with no secrets in it. Every value the customer has to
+supply is marked `# [REQUIRED]`. List them with:
 
 ```bash
-openssl rand -hex 32
+grep -n -A1 '\[REQUIRED\]' .env
 ```
 
-`ENCRYPTION_KEY` and `TOTP_ENCRYPTION_KEY` must match between `authnull-service` and
-`authn-service`. Both read the same `.env`, so keep them set and never rotate only one.
+| Variable(s) | What to put |
+|---|---|
+| `DB_USER` / `POSTGRES_USER` | Any username for the bundled Postgres. Both must be identical |
+| `DB_PASSWORD` / `POSTGRES_PASSWORD` | Any strong password. Both must be identical |
+| `ORG_NAME` | The org's short name, e.g. `acme`. It's used in `default.<org>.<domain>` |
+| URL block A **or** B | Uncomment one: **A** for domain + HTTPS, **B** for bare IP. Sets `SYSTEM_URL`, `DOMAIN_URL`, `TENANT_BASE_DOMAIN`, `SSC_*`, `CLIENT_URL`, `ROOT_URL`, `AUTHNULL_LOGOUT_URL`, `WEBAUTHN_*` |
+| `JWT_SECRET`, `INTERNAL_API_KEY`, `REDIS_PASSWORD` | `openssl rand -hex 32` |
+| `TOTP_ENCRYPTION_KEY` | `openssl rand -hex 32` (64 hex chars) |
+| `ENCRYPTION_KEY` | `openssl rand -hex 16` (exactly 32 hex chars) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM`, `SMTP_PASSWORD` | The customer's mail relay, used for verification and invite emails |
+
+Never change `ENCRYPTION_KEY` or `TOTP_ENCRYPTION_KEY` after the first start. A changed key
+doesn't fail loudly: stored data silently becomes unreadable and users are locked out of MFA.
+Back up the filled-in `.env`, and don't commit it.
+
+Optional integrations (Twilio, Duo, Okta, Azure/AWS storage, push-MFA tuning) are further down
+in `.env`. Leave them blank to disable them. For SMS, set `TWILIO_FROM_NUMBER`: the service
+doesn't read `TWILIO_PHONE`.
 
 ### Push MFA (Firebase)
 
@@ -196,9 +200,8 @@ tenant origin in the CORS map.
 
 ## Security notes
 
-- **`.env` is committed and contains real secrets** (DB, Redis, SMTP, Twilio, AWS, Azure,
-  Cloudflare, Okta/Duo and others). Treat them as exposed: rotate them, move production values to
-  `.env.prod` (gitignored), and replace `.env` with placeholders.
+- The committed `.env` is a blank template. Never commit a filled-in copy. Keep real values in
+  the deployed copy on the VM, or in `.env.prod` (gitignored).
 - Every port is published on **all interfaces**, including 5432, 6379, 9042, 6066, 2882, 9255
   and 9291. Docker bypasses `ufw`, so these are reachable from the network even with a host
   firewall. With nginx in front, change the mappings to `"127.0.0.1:PORT:PORT"` so only 80/443
