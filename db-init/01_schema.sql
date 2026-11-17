@@ -9679,18 +9679,8 @@ CREATE TABLE IF NOT EXISTS did.gateway_jobs (
     created_at       timestamptz NOT NULL DEFAULT now()
 );
 
--- did-schema-init replays every migration on each `up`. 024 replaces this index
--- with a per-account one and allows two open jobs per endpoint and kind, so
--- recreating it on a replay would fail on that data and stop the stack. Only
--- create it while 024's index does not exist yet.
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes
-                   WHERE schemaname = 'did' AND indexname = 'gateway_jobs_one_open_per_account') THEN
-        CREATE UNIQUE INDEX IF NOT EXISTS gateway_jobs_one_open
-            ON did.gateway_jobs (org_id, endpoint_id, kind) WHERE status IN ('queued', 'claimed');
-    END IF;
-END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS gateway_jobs_one_open
+    ON did.gateway_jobs (org_id, endpoint_id, kind) WHERE status IN ('queued', 'claimed');
 
 CREATE INDEX IF NOT EXISTS gateway_jobs_for_gateway
     ON did.gateway_jobs (org_id, jump_server_id, status, created_at);
@@ -10566,7 +10556,11 @@ ALTER TABLE did.vault_secrets ADD CONSTRAINT vault_secrets_kind_check
                     -- 053: the organisation's SSH user CA private key.
                     'ssh_user_ca',
                     -- 057: a tenant's ID token signing key (app identity provider).
-                    'idp_signing_key'));
+                    'idp_signing_key',
+                    -- 076: a database role's password, current and staged.
+                    'db_password', 'db_password_staged',
+                    -- 083: a network device's RADIUS secret and TACACS+ key (AuthNull AAA).
+                    'radius_device_secret'));
 
 ALTER TABLE did.gateway_jobs DROP CONSTRAINT IF EXISTS gateway_jobs_kind_check;
 ALTER TABLE did.gateway_jobs ADD CONSTRAINT gateway_jobs_kind_check
@@ -10937,7 +10931,7 @@ ALTER TABLE did.vault_access_log ADD CONSTRAINT vault_access_log_action_check
     CHECK (action IN ('put', 'rotate', 'release', 'refuse', 'retire', 'move'));
 
 -- ----------------------------------------------------------------------------
--- 053_mfa_browser_signin.sql
+-- 052_mfa_browser_signin.sql
 -- ----------------------------------------------------------------------------
 
 -- Authenticator: signing in to the organization from the app through the browser.
@@ -10953,7 +10947,7 @@ ALTER TABLE did.mfa_device_settings
     ADD COLUMN IF NOT EXISTS browser_signin_skips_check boolean NOT NULL DEFAULT false;
 
 -- ----------------------------------------------------------------------------
--- 054_mfa_number_matching.sql
+-- 053_mfa_number_matching.sql
 -- ----------------------------------------------------------------------------
 
 -- Authenticator: number matching on console sign-in pushes.
@@ -10968,7 +10962,7 @@ ALTER TABLE did.mfa_device_settings
     ADD COLUMN IF NOT EXISTS number_matching varchar(16) NOT NULL DEFAULT 'off';
 
 -- ----------------------------------------------------------------------------
--- 055_ssh_user_ca_in_vault.sql
+-- 053_ssh_user_ca_in_vault.sql
 -- ----------------------------------------------------------------------------
 
 -- The SSH user CA private key moves into the vault.
@@ -10995,7 +10989,7 @@ ALTER TABLE did.ssh_user_ca ADD CONSTRAINT ssh_user_ca_key_check
     CHECK (private_key_enc IS NOT NULL OR vault_secret_id IS NOT NULL);
 
 -- ----------------------------------------------------------------------------
--- 056_mfa_push_factor.sql
+-- 054_mfa_push_factor.sql
 -- ----------------------------------------------------------------------------
 
 -- Authenticator: Push as a second factor a tenant can offer at console sign-in.
@@ -11021,7 +11015,7 @@ WHERE c.name = 'TOTP'
   );
 
 -- ----------------------------------------------------------------------------
--- 057_mfa_user_default.sql
+-- 055_mfa_user_default.sql
 -- ----------------------------------------------------------------------------
 
 -- The second factor a user chose as their default (POST /mfa/default). Without a row, the
@@ -11038,7 +11032,7 @@ CREATE TABLE IF NOT EXISTS did.user_mfa_default (
 );
 
 -- ----------------------------------------------------------------------------
--- 058_ad_fallback_deny_default.sql
+-- 056_ad_fallback_deny_default.sql
 -- ----------------------------------------------------------------------------
 
 -- 056_ad_fallback_deny_default.sql
@@ -11063,7 +11057,7 @@ END
 $$;
 
 -- ----------------------------------------------------------------------------
--- 059_app_idp.sql
+-- 057_app_idp.sql
 -- ----------------------------------------------------------------------------
 
 -- AuthNull as an identity provider for applications (OpenID Connect now, SAML
@@ -11180,7 +11174,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idp_login_sources_one_per_directory
     ON did.idp_login_sources (org_id, tenant_id, identity_source_id);
 
 -- ----------------------------------------------------------------------------
--- 060_idp_login_source_no_sso_provider.sql
+-- 058_idp_login_source_no_sso_provider.sql
 -- ----------------------------------------------------------------------------
 
 -- An Entra login source signs users in with the tenant's Entra connection.
@@ -11198,7 +11192,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idp_login_sources_one_per_directory
 ALTER TABLE did.idp_login_sources DROP COLUMN IF EXISTS sso_provider_id;
 
 -- ----------------------------------------------------------------------------
--- 061_idp_mfa_api.sql
+-- 059_idp_mfa_api.sql
 -- ----------------------------------------------------------------------------
 
 -- An application can be an MFA API client (protocol 'mfa_api').
@@ -11217,7 +11211,7 @@ ALTER TABLE did.idp_apps DROP CONSTRAINT IF EXISTS idp_apps_protocol_check;
 ALTER TABLE did.idp_apps ADD CONSTRAINT idp_apps_protocol_check CHECK (protocol IN ('oidc', 'saml', 'mfa_api'));
 
 -- ----------------------------------------------------------------------------
--- 062_directory_totp.sql
+-- 060_directory_totp.sql
 -- ----------------------------------------------------------------------------
 
 -- TOTP for directory users: the second factor for when the phone is offline.
@@ -11257,7 +11251,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS directory_totp_one_per_user
     ON did.directory_totp (org_id, tenant_id, ad_user_id);
 
 -- ----------------------------------------------------------------------------
--- 063_idp_saml.sql
+-- 061_idp_saml.sql
 -- ----------------------------------------------------------------------------
 
 -- SAML 2.0 service providers for the app identity provider.
@@ -11292,7 +11286,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idp_saml_sps_entity
     ON did.idp_saml_sps (org_id, tenant_id, entity_id);
 
 -- ----------------------------------------------------------------------------
--- 064_radius_servers.sql
+-- 061_radius_servers.sql
 -- ----------------------------------------------------------------------------
 
 -- RADIUS server registry (RADIUS MFA plan, WS1.1).
@@ -11393,7 +11387,7 @@ BEGIN
 END $$;
 
 -- ----------------------------------------------------------------------------
--- 065_app_clients.sql
+-- 062_app_clients.sql
 -- ----------------------------------------------------------------------------
 
 -- Rename the app identity provider's client table to did.app_clients.
@@ -11415,9 +11409,8 @@ BEGIN
 END
 $$;
 
-
 -- ----------------------------------------------------------------------------
--- 066_app_client_secret_hint.sql
+-- 063_app_client_secret_hint.sql
 -- ----------------------------------------------------------------------------
 
 -- A hint of each application's client secret, for the console.
@@ -11432,6 +11425,1305 @@ $$;
 -- Numbered 063, following 062_app_clients.sql. Safe to run repeatedly.
 
 ALTER TABLE did.app_clients ADD COLUMN IF NOT EXISTS secret_hint text;
+
+-- ----------------------------------------------------------------------------
+-- 064_app_tokens.sql
+-- ----------------------------------------------------------------------------
+
+-- Access tokens of MFA API applications, readable by authn-service.
+--
+-- An MFA API application (did.idp_apps, protocol 'mfa_api') exchanges its
+-- client id and secret (did.app_clients) at <issuer>/oauth2/token -- the client
+-- credentials grant -- for a short-lived token "apt.<org>.<random>". The app
+-- presents it as "Authorization: Bearer" to authn-service's
+-- do-authenticationV4 (credentialType APP), and to AuthNull's own MFA API.
+--
+-- Only the token's SHA-256 is stored, as for gateway (gwt.) and AD sensor
+-- (snt.) tokens: the org in the token says which database to look in, and
+-- authn-service, which already reads the org databases, checks it there. A
+-- token stops working when it expires, when the app is disabled or deleted,
+-- or when its secret is rotated (the rows are deleted).
+--
+-- Numbered 064, following 063_app_client_secret_hint.sql. Safe to run repeatedly.
+
+CREATE TABLE IF NOT EXISTS did.app_tokens (
+    token_hash text        PRIMARY KEY,
+    app_id     uuid        NOT NULL REFERENCES did.idp_apps (id) ON DELETE CASCADE,
+    org_id     integer     NOT NULL,
+    tenant_id  integer     NOT NULL,
+    client_id  text        NOT NULL,
+    issued_at  timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS app_tokens_app ON did.app_tokens (app_id);
+CREATE INDEX IF NOT EXISTS app_tokens_expiry ON did.app_tokens (expires_at);
+
+-- ----------------------------------------------------------------------------
+-- 065_app_mfa_settings.sql
+-- ----------------------------------------------------------------------------
+
+-- Per-application settings of an MFA API application's hosted second factor
+-- (the redirect flow: /oauth2/par -> /oauth2/authorize -> AuthNull's approve
+-- page -> code -> /oauth2/token).
+--
+--   session_ttl_seconds  how long the ID token the application gets lasts: the
+--                        application's session after a second factor (8 hours)
+--   mfa_methods          which second factors the application allows: "push",
+--                        "totp" (both). authn-service enforces it in
+--                        do-authenticationV4, for the redirect flow and for an
+--                        application calling it with its own token.
+--
+-- Numbered 065, following 064_app_tokens.sql. Safe to run repeatedly.
+
+ALTER TABLE did.idp_apps ADD COLUMN IF NOT EXISTS session_ttl_seconds integer NOT NULL DEFAULT 28800;
+ALTER TABLE did.idp_apps ADD COLUMN IF NOT EXISTS mfa_methods jsonb NOT NULL DEFAULT '["push","totp"]'::jsonb;
+
+-- ----------------------------------------------------------------------------
+-- 066_policy_fallback.sql
+-- ----------------------------------------------------------------------------
+
+-- Mark the "deny anything not covered" policies as fallbacks.
+--
+-- The policy engine now applies one rule on every channel: a MATCHING BLOCK GOVERNS,
+-- whatever else matches (internal/policy/engine, docs/POLICY-ENGINE.md). Before it, AD and
+-- RADIUS let the first match in order govern, and "deny anything my policies do not cover"
+-- was written as a block policy that sorted LAST -- a matchAll block (scripts/
+-- ad-whitelist-restore.sql, shape A) or a block sibling behind each policy (shape B).
+--
+-- Under the new rule those blocks would govern every login they match, which is every login.
+-- So a policy is now marked "fallback": true to mean "consider me only when no other policy
+-- governs", and this migration marks the ones the restore script created, which are named
+-- "Deny uncovered contexts -- <domain>" and "Deny uncovered -- <policy>". Their behaviour is
+-- unchanged by the upgrade.
+--
+-- Hand-written matchAll blocks are NOT touched: nothing distinguishes one meant as a fallback
+-- from one meant as a freeze, and guessing either way changes who can sign in. Review them
+-- with the query in docs/POLICY-ENGINE.md ("Upgrading") before or after upgrading.
+--
+-- Numbered 066, following 065_app_mfa_settings.sql. Safe to run repeatedly, and a no-op on a
+-- database without the table.
+
+DO $$
+BEGIN
+  IF to_regclass('did.auth_policy_json') IS NOT NULL THEN
+    UPDATE did.auth_policy_json
+       SET policy_json = policy_json || '{"fallback": true}'::jsonb
+     WHERE (policy_name LIKE 'Deny uncovered contexts -- %' OR policy_name LIKE 'Deny uncovered -- %')
+       AND lower(trim(coalesce(policy_json->>'policyFlow', ''))) IN ('block', 'deny')
+       AND coalesce(policy_json->>'fallback', 'false') <> 'true';
+  END IF;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 067_aaa_server.sql
+-- ----------------------------------------------------------------------------
+
+-- AuthNull AAA server (authnull-aaa): a new RADIUS registry type and the accounting table.
+--
+-- The registry type `authnull` is treated like `freeradius` everywhere (heartbeat, health,
+-- Down/recovered alerts, per-server login counts). 061 created the CHECK inline, so Postgres
+-- named it radius_servers_type_check.
+--
+-- did.aaa_accounting holds TACACS+ and RADIUS accounting records sent by the AAA server.
+-- Rows go with their server (ON DELETE CASCADE).
+--
+-- Safe to replay: constraint is dropped IF EXISTS and re-added; table and indexes are IF NOT EXISTS.
+
+ALTER TABLE did.radius_servers DROP CONSTRAINT IF EXISTS radius_servers_type_check;
+ALTER TABLE did.radius_servers ADD CONSTRAINT radius_servers_type_check
+    CHECK (type IN ('freeradius', 'nps', 'ise', 'clearpass', 'authnull'));
+
+CREATE TABLE IF NOT EXISTS did.aaa_accounting (
+    id               bigserial    PRIMARY KEY,
+    org_id           integer      NOT NULL,
+    tenant_id        integer      NOT NULL,
+    radius_server_id uuid         NOT NULL REFERENCES did.radius_servers(id) ON DELETE CASCADE,
+    protocol         varchar(8)   NOT NULL CHECK (protocol IN ('radius', 'tacacs')),
+    record_type      varchar(16)  NOT NULL,
+    username         varchar(255),
+    nas_ip           varchar(64),
+    port             varchar(64),
+    rem_addr         varchar(255),
+    task_id          varchar(64),
+    service          varchar(64),
+    cmd              text,
+    elapsed_sec      bigint,
+    av_pairs         jsonb,
+    device_time      timestamptz,  -- the device's own clock (Event-Timestamp, start/stop_time); NULL if none or implausible
+    received_at      timestamptz  NOT NULL DEFAULT now()  -- when authnull-aaa received the record (its timeMs), not
+                                                          -- when it was delivered; now() if missing or implausible
+);
+
+CREATE INDEX IF NOT EXISTS aaa_accounting_server_received_idx
+    ON did.aaa_accounting (radius_server_id, received_at DESC);
+-- lower(username): ListAccounting's user filter is case-insensitive.
+CREATE INDEX IF NOT EXISTS aaa_accounting_user_received_idx
+    ON did.aaa_accounting (org_id, tenant_id, lower(username), received_at DESC);
+CREATE INDEX IF NOT EXISTS aaa_accounting_received_idx
+    ON did.aaa_accounting (received_at);
+
+-- Server-computed sha256 of a record's identifying fields: a batch re-sent after a lost reply inserts nothing new.
+-- Added after CREATE TABLE so a replay on an already-created table still gets it. Old rows keep NULL (never conflict).
+ALTER TABLE did.aaa_accounting ADD COLUMN IF NOT EXISTS dedupe_key varchar(64);
+CREATE UNIQUE INDEX IF NOT EXISTS aaa_accounting_dedupe
+    ON did.aaa_accounting (radius_server_id, dedupe_key);
+
+-- ListAccounting always filters by org + tenant and sorts by time; the nasIp filter needs its own index.
+CREATE INDEX IF NOT EXISTS aaa_accounting_tenant_time_idx
+    ON did.aaa_accounting (org_id, tenant_id, received_at DESC);
+CREATE INDEX IF NOT EXISTS aaa_accounting_tenant_nas_idx
+    ON did.aaa_accounting (org_id, tenant_id, nas_ip, received_at DESC);
+
+-- A device's last login now counts TACACS+ too (deviceActivity: protocol IN ('radius','tacacs')), which
+-- 061's `WHERE protocol = 'radius'` partial indexes cannot serve: without these the Network Devices
+-- page scans the tenant's whole auth_log once per device. CONCURRENTLY and the leftover cleanup as in 061.
+DO $$
+DECLARE r record;
+BEGIN
+    FOR r IN SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'did' AND NOT i.indisvalid
+               AND c.relname IN ('auth_log_aaa_gateway_idx', 'auth_log_aaa_nas_id_idx')
+    LOOP
+        EXECUTE format('DROP INDEX did.%I', r.relname);
+    END LOOP;
+END $$;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS auth_log_aaa_gateway_idx
+    ON did.auth_log (gateway_id, ts_unix_ms DESC) WHERE protocol IN ('radius', 'tacacs');
+CREATE INDEX CONCURRENTLY IF NOT EXISTS auth_log_aaa_nas_id_idx
+    ON did.auth_log (lower(service_spn), ts_unix_ms DESC) WHERE protocol IN ('radius', 'tacacs');
+
+-- ----------------------------------------------------------------------------
+-- 068_db_proxy_credentials.sql
+-- ----------------------------------------------------------------------------
+
+-- 068: client credentials for database proxies (ProxySQL), DB-MFA-HARDENING S3.
+--
+-- Lives in each org's database and follows 049_ad_sensor_credentials: a client id and secret are
+-- issued when an admin downloads db.env for a proxy install, the secret is stored only as a
+-- SHA-256 hash, and the proxy trades the pair for a short-lived bearer token at
+-- /api/v1/database/proxy/token. authn-service checks that token on every do-authenticationV4 call
+-- the proxy makes (AUTH-212 caller "db-proxy"), so only a proxy of this org and tenant can ask for
+-- database login decisions.
+--
+-- An org may hold several live credentials, one per proxy install. A credential stops working
+-- when revoked_at is set.
+--
+-- Replayed on every start: everything here is IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS did.db_proxy_credentials (
+    id            serial PRIMARY KEY,
+    org_id        integer     NOT NULL,
+    tenant_id     integer     NOT NULL,
+    label         text        NOT NULL DEFAULT '',
+    client_id     text        NOT NULL UNIQUE,
+    secret_hash   text        NOT NULL,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    created_by    integer,
+    last_used_at  timestamptz,
+    revoked_at    timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS db_proxy_credentials_org
+    ON did.db_proxy_credentials (org_id) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS did.db_proxy_tokens (
+    token_hash     text        PRIMARY KEY,
+    credential_id  integer     NOT NULL REFERENCES did.db_proxy_credentials (id),
+    org_id         integer     NOT NULL,
+    tenant_id      integer     NOT NULL,
+    issued_at      timestamptz NOT NULL DEFAULT now(),
+    expires_at     timestamptz NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS db_proxy_tokens_expiry ON did.db_proxy_tokens (expires_at);
+
+-- ----------------------------------------------------------------------------
+-- 069_direct_access.sql
+-- ----------------------------------------------------------------------------
+
+-- 069: the database agent's verdict on direct access to the database server (DB-MFA-HARDENING S1).
+--
+-- MFA happens at ProxySQL; a client that can reach Postgres directly as a managed role skips it.
+-- Every sync the agent reads the server's pg_hba rules and reports whether anything but the proxy
+-- can log in as a managed role ("protected", "exposed" or "unknown", with the rules that say so
+-- and the lines to add). It arrives with the agent's last-active report and is stored on its
+-- did.epm_machines row, for the console's database-agent page.
+--
+-- Replayed on every start: idempotent, and a database without epm_machines is left alone.
+
+DO $$
+BEGIN
+    IF to_regclass('did.epm_machines') IS NOT NULL THEN
+        ALTER TABLE did.epm_machines ADD COLUMN IF NOT EXISTS direct_access_status     text;
+        ALTER TABLE did.epm_machines ADD COLUMN IF NOT EXISTS direct_access_detail     text;
+        ALTER TABLE did.epm_machines ADD COLUMN IF NOT EXISTS direct_access_checked_at timestamptz;
+    END IF;
+END
+$$;
+
+-- ----------------------------------------------------------------------------
+-- 070_database_access_settings.sql
+-- ----------------------------------------------------------------------------
+
+-- 070: what a database login no policy covers gets, per tenant (DB-MFA-HARDENING S9).
+--
+-- It was always allowed: AuthNull acted only where a policy said to, so installing it protected
+-- nothing until every role had a policy, and deleting a policy silently opened the door it had
+-- guarded. Each tenant now chooses -- allow (the default, as before), mfa (challenge the person,
+-- then allow) or deny -- from the console (internal/database/nopolicy). authn-service reads it
+-- when no policy covers a database login.
+--
+-- No row means allow. Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS did.database_access_settings (
+    org_id            integer     NOT NULL,
+    tenant_id         integer     NOT NULL,
+    no_policy_action  text        NOT NULL DEFAULT 'allow'
+                      CHECK (no_policy_action IN ('allow', 'mfa', 'deny')),
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    updated_by        integer,
+    PRIMARY KEY (org_id, tenant_id)
+);
+
+-- ----------------------------------------------------------------------------
+-- 071_policy_status_case.sql
+-- ----------------------------------------------------------------------------
+
+-- 071: policy statuses in the spelling every reader filters on.
+--
+-- PolicyAction stored the status as the caller sent it, so a policy approved with "approved"
+-- (which docs/POLICY-API.md documented) was saved lowercase. Everything that reads policies
+-- filters on "Approved", so such a policy matched nothing -- no connection strings, no policy
+-- search -- while the console listed it as approved. PolicyAction now stores the canonical
+-- spelling; this fixes rows written before.
+--
+-- Replayed on every start: idempotent, and a no-op on a database without the table.
+
+DO $$
+BEGIN
+  IF to_regclass('did.auth_policy_json') IS NOT NULL THEN
+    UPDATE did.auth_policy_json SET status = 'Approved'  WHERE lower(trim(status)) = 'approved'  AND status <> 'Approved';
+    UPDATE did.auth_policy_json SET status = 'Suspended' WHERE lower(trim(status)) = 'suspended' AND status <> 'Suspended';
+    UPDATE did.auth_policy_json SET status = 'Deleted'   WHERE lower(trim(status)) = 'deleted'   AND status <> 'Deleted';
+  END IF;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 072_db_user_privilege_level.sql
+-- ----------------------------------------------------------------------------
+
+-- 072: how much each synced database role can do, for policies' privilege condition
+-- ("MFA for superuser roles only").
+--
+-- The database agent reports it with every role it syncs (privilegeLevel): admin (superuser, or
+-- able to run programs or read and write files on the server), elevated (create roles or
+-- databases, replication, bypass RLS, read or write all data) or standard. The policy engine's
+-- database channel reads it for the role a login asks for. NULL until an agent that reports it
+-- has synced: the privilege is then unknown, so Block and Require MFA policies with a privilege
+-- condition still apply and Allow policies with one do not.
+--
+-- Replayed on every start: idempotent, and a no-op on a database without the table.
+
+DO $$
+BEGIN
+  IF to_regclass('did.db_user') IS NOT NULL THEN
+    ALTER TABLE did.db_user ADD COLUMN IF NOT EXISTS privilege_level text;
+  END IF;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 073_password_rotation_setting.sql
+-- ----------------------------------------------------------------------------
+
+-- 073: how often the database agent rotates managed role passwords, per tenant (AUTH-233).
+--
+-- The agent rotates the passwords of the roles ProxySQL logs in as (database-agent S4). The
+-- interval was PASSWORD_ROTATION_HOURS in each agent's db.env: set by whoever installed it,
+-- invisible in the console, and different on every agent. It is now the tenant's choice in the
+-- console (internal/database/rotation), sent to each agent in the response to its last-active
+-- report.
+--
+-- A column on 070's table: both are a tenant's database access settings. Rows that exist
+-- already (a tenant that chose a no-policy action) get the default, 24 hours -- the agent's own
+-- default, so nothing changes until someone chooses. At most a year.
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+ALTER TABLE did.database_access_settings
+    ADD COLUMN IF NOT EXISTS password_rotation_hours integer NOT NULL DEFAULT 24
+        CONSTRAINT database_access_settings_rotation_hours CHECK (password_rotation_hours BETWEEN 1 AND 8760);
+
+-- ----------------------------------------------------------------------------
+-- 074_db_access_log.sql
+-- ----------------------------------------------------------------------------
+
+-- 074: the database access audit log (AUTH-229).
+--
+-- Every database login decision: who (the person the connection token names), as which
+-- database role, into which database on which host, from where, what was decided and why --
+-- the policy, and the MFA challenge when there was one.
+--
+-- It was not recorded at all. authn-service's DoAuthenticationDatabase answered ProxySQL and
+-- logged nothing an auditor could read; did.mfa_push_activity held the push challenges, and
+-- every login that was allowed, blocked, refused for a bad token or decided by the no-policy
+-- setting left no trace.
+--
+-- authn-service writes a row here at each answer, in the same transaction as the event it puts
+-- in did.siem_outbox (log_type 'database'), so the console and the SIEM see the same events.
+-- event_id is shared by both and makes a retried write a no-op. The console reads it through
+-- internal/database/accesslog. Rows are kept: this is an audit trail.
+--
+-- reason_code is one of a fixed set authn-service uses (docs/DB-ACCESS-AUDIT.md); reason is the
+-- human sentence beside it.
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS did.db_access_log (
+    id            bigserial   PRIMARY KEY,
+    event_id      uuid        NOT NULL UNIQUE,
+    org_id        integer     NOT NULL,
+    tenant_id     integer     NOT NULL,
+    at            timestamptz NOT NULL DEFAULT now(),
+    request_id    text,
+    user_id       integer,
+    email         text,
+    db_user       text,
+    database_name text,
+    db_type       text,
+    db_host       text,
+    client_ip     text,
+    decision      text        NOT NULL CONSTRAINT db_access_log_decision CHECK (decision IN ('allowed', 'denied')),
+    reason_code   text        NOT NULL,
+    reason        text,
+    policy_id     text,
+    policy_name   text,
+    policy_action text,
+    mfa_method    text,
+    mfa_status    text,
+    challenge_id  bigint
+);
+
+CREATE INDEX IF NOT EXISTS db_access_log_tenant_at ON did.db_access_log (org_id, tenant_id, at DESC);
+CREATE INDEX IF NOT EXISTS db_access_log_denied ON did.db_access_log (org_id, tenant_id, at DESC) WHERE decision = 'denied';
+
+-- ----------------------------------------------------------------------------
+-- 075_admin_audit_log.sql
+-- ----------------------------------------------------------------------------
+
+-- 075: the console's audit trail (AUTH-229): who changed what, when, from where, and whether it
+-- worked.
+--
+-- Nothing recorded console changes. Who switched a database policy from Block to Allow, who set
+-- the no-policy action to allow, who issued a proxy credential: none of it could be answered.
+-- did.audit_log is a sign-in session log (browser, session length), and did.mfa_device_audit
+-- covers Authenticator devices only.
+--
+-- One row per change request made with a console session (internal/adminaudit): the person,
+-- their address and browser, the route, the status, and for chosen objects -- database policies,
+-- database settings -- the object before and after. Request bodies are never stored: they carry
+-- secrets, and a note says what matters. Refused attempts (401/403) are rows too.
+--
+-- APPEND-ONLY
+--
+-- A trigger refuses UPDATE and DELETE, so a row cannot be edited away by the application or by
+-- anyone with its database credentials short of dropping the trigger -- which is itself a DDL
+-- change a database audit would show. A retention job, when there is one, disables it for its
+-- own statement.
+--
+-- The same event goes to each tenant's SIEM as "Platform Audit Logs" (did.siem_outbox,
+-- log_type 'platform').
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS / OR REPLACE.
+
+CREATE TABLE IF NOT EXISTS did.admin_audit_log (
+    id            bigserial   PRIMARY KEY,
+    event_id      uuid        NOT NULL UNIQUE,
+    org_id        integer     NOT NULL,
+    tenant_id     integer     NOT NULL,
+    at            timestamptz NOT NULL DEFAULT now(),
+    actor_user_id integer     NOT NULL,
+    actor_email   text,
+    client_ip     text,
+    user_agent    text,
+    method        text        NOT NULL,
+    route         text        NOT NULL,
+    status        integer     NOT NULL,
+    outcome       text        NOT NULL CONSTRAINT admin_audit_log_outcome CHECK (outcome IN ('success', 'failure', 'denied')),
+    action        text        NOT NULL,
+    target_type   text,
+    target_id     text,
+    changes       jsonb
+);
+
+CREATE INDEX IF NOT EXISTS admin_audit_log_tenant_at ON did.admin_audit_log (org_id, tenant_id, at DESC);
+CREATE INDEX IF NOT EXISTS admin_audit_log_target ON did.admin_audit_log (org_id, target_type, target_id);
+
+CREATE OR REPLACE FUNCTION did.admin_audit_log_refuse_change() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'did.admin_audit_log is append-only';
+END $$;
+
+DROP TRIGGER IF EXISTS admin_audit_log_append_only ON did.admin_audit_log;
+CREATE TRIGGER admin_audit_log_append_only BEFORE UPDATE OR DELETE ON did.admin_audit_log
+    FOR EACH ROW EXECUTE FUNCTION did.admin_audit_log_refuse_change();
+
+-- ----------------------------------------------------------------------------
+-- 076_db_password_vault.sql
+-- ----------------------------------------------------------------------------
+
+-- 076: database role passwords managed in the vault (AUTH-232, AUTH-233; docs/DB-PASSWORD-VAULT.md).
+--
+-- The backend becomes the source of a managed role's password: it generates it, keeps it in the
+-- vault (did.vault_secrets, kinds db_password and db_password_staged -- the kind list is owned
+-- by 042), and the database agent applies it to the database and to ProxySQL. Staged first,
+-- promoted once the agent reports both changed, so a failure halfway leaves the current password
+-- current.
+--
+-- A role belongs to the database server, not to one database: an account is (org, host, role),
+-- the host being did.db_hosts.id, which did.db_user.host_id points at.
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS did.db_managed_accounts (
+    org_id       integer     NOT NULL,
+    tenant_id    integer     NOT NULL,
+    db_host_id   integer     NOT NULL,
+    role         text        NOT NULL,
+    enabled      boolean     NOT NULL DEFAULT true,
+    status       text        NOT NULL DEFAULT 'pending'
+                 CONSTRAINT db_managed_accounts_status CHECK (status IN ('pending', 'active', 'rotating', 'failed')),
+    rotated_at   timestamptz,
+    next_due_at  timestamptz NOT NULL DEFAULT now(),
+    rerotate_at  timestamptz,
+    last_job_id  uuid,
+    failures     integer     NOT NULL DEFAULT 0,
+    detail       text,
+    created_by   integer,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_by   integer,
+    updated_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, db_host_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS db_managed_accounts_due
+    ON did.db_managed_accounts (org_id, tenant_id, next_due_at) WHERE enabled;
+
+-- The agent's queue, modelled on did.gateway_jobs (023). claimed_by is the install credential
+-- (did.db_proxy_credentials.id) holding the claim; the staged password is released only to it,
+-- while lease_until is in the future.
+CREATE TABLE IF NOT EXISTS did.db_agent_jobs (
+    id               uuid        PRIMARY KEY,
+    org_id           integer     NOT NULL,
+    tenant_id        integer     NOT NULL,
+    db_host_id       integer     NOT NULL,
+    role             text        NOT NULL,
+    kind             text        NOT NULL CONSTRAINT db_agent_jobs_kind CHECK (kind IN ('rotate_password')),
+    status           text        NOT NULL DEFAULT 'queued'
+                     CONSTRAINT db_agent_jobs_status CHECK (status IN ('queued', 'claimed', 'done', 'failed', 'cancelled')),
+    claimed_by       integer,
+    lease_until      timestamptz,
+    staged_secret_id uuid,
+    attempts         integer     NOT NULL DEFAULT 0,
+    error            text,
+    created_by       integer,
+    created_at       timestamptz NOT NULL DEFAULT now(),
+    finished_at      timestamptz
+);
+
+-- At most one open job per account: a second "rotate now" joins the first.
+CREATE UNIQUE INDEX IF NOT EXISTS db_agent_jobs_one_open
+    ON did.db_agent_jobs (org_id, db_host_id, role) WHERE status IN ('queued', 'claimed');
+CREATE INDEX IF NOT EXISTS db_agent_jobs_queue
+    ON did.db_agent_jobs (org_id, tenant_id, db_host_id, created_at) WHERE status = 'queued';
+
+-- ----------------------------------------------------------------------------
+-- 077_db_password_reveals.sql
+-- ----------------------------------------------------------------------------
+
+-- 077: revealing a database role's password (AUTH-232; docs/DB-PASSWORD-VAULT.md).
+--
+-- Break-glass, as for PAM's local accounts (035, did.password_reveals): an administrator asks, a
+-- push goes to their own phone naming the role and the server, and once it is approved the
+-- password is shown ONCE. The role is then rotated again soon after (db_managed_accounts.rerotate_at),
+-- so a revealed password does not stay valid. Every step is in the audit trail, and the vault logs
+-- the release.
+--
+-- A table of its own rather than did.password_reveals: that one's endpoint_id is an epm_machines
+-- id, and a database host id would collide with it.
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS did.db_password_reveals (
+    id           uuid        PRIMARY KEY,
+    org_id       integer     NOT NULL,
+    tenant_id    integer     NOT NULL,
+    db_host_id   integer     NOT NULL,
+    role         text        NOT NULL,
+    user_id      integer     NOT NULL,
+    email        text        NOT NULL,
+    challenge_id integer     NOT NULL,
+    status       text        NOT NULL DEFAULT 'pending'
+                 CONSTRAINT db_password_reveals_status CHECK (status IN ('pending', 'denied', 'expired', 'shown')),
+    client_ip    text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    resolved_at  timestamptz
+);
+
+CREATE INDEX IF NOT EXISTS db_password_reveals_account ON did.db_password_reveals (org_id, db_host_id, role, created_at DESC);
+
+-- ----------------------------------------------------------------------------
+-- 077_mfa_device_key_storage.sql
+-- ----------------------------------------------------------------------------
+
+-- 077: where a device keeps its signing key, as the app reports it at enrollment.
+--
+-- 'hardware' (Secure Enclave, Android Keystore, TPM / Windows Hello) or 'software' (a key in a
+-- file, which is what the Linux desktop app will have). Shown in the admin device list so an
+-- admin can tell the two apart. Empty for a device enrolled before the app sent it: every phone
+-- so far, all of them hardware-backed.
+--
+-- Lives in each org's database. Replayed on every start: IF NOT EXISTS.
+
+ALTER TABLE did.mfa_devices
+    ADD COLUMN IF NOT EXISTS key_storage text NOT NULL DEFAULT '';
+
+-- ----------------------------------------------------------------------------
+-- 078_db_roles.sql
+-- ----------------------------------------------------------------------------
+
+-- 078: database roles created from the console, with their grants (AUTH-227; docs/DB-ROLES.md).
+--
+-- A console-created role is desired state: the grants the console last set (version), and the
+-- version the database agent last applied (applied_version). The agent's job queue (076) carries
+-- the work: apply_role creates the role if it is missing -- its password staged in the vault, as a
+-- rotation's is -- and makes its grants exactly these; drop_role removes it. valid_until, when set,
+-- drops the role once it passes (temporary users).
+--
+-- The role is a managed account (076) from the start, so rotation and reveal work on it as on any
+-- other.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_roles (
+    org_id          integer     NOT NULL,
+    tenant_id       integer     NOT NULL,
+    db_host_id      integer     NOT NULL,
+    role            text        NOT NULL,
+    grants          jsonb       NOT NULL,
+    valid_until     timestamptz,
+    version         integer     NOT NULL DEFAULT 1,
+    applied_version integer     NOT NULL DEFAULT 0,
+    state           text        NOT NULL DEFAULT 'creating'
+                    CONSTRAINT db_roles_state CHECK (state IN ('creating', 'active', 'failed', 'dropping', 'dropped')),
+    failures        integer     NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    detail          text,
+    created_by      integer,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_by      integer,
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    dropped_at      timestamptz,
+    PRIMARY KEY (org_id, db_host_id, role)
+);
+
+-- What the agent last applied: the databases a role must be revoked from when its grants move, and
+-- dropped from in the end.
+ALTER TABLE did.db_roles ADD COLUMN IF NOT EXISTS applied_grants jsonb;
+
+CREATE INDEX IF NOT EXISTS db_roles_tenant ON did.db_roles (org_id, tenant_id, db_host_id);
+
+-- The jobs that carry them: what to apply travels with the job, so a later change does not alter
+-- a job already claimed.
+ALTER TABLE did.db_agent_jobs ADD COLUMN IF NOT EXISTS payload jsonb;
+ALTER TABLE did.db_agent_jobs DROP CONSTRAINT IF EXISTS db_agent_jobs_kind;
+ALTER TABLE did.db_agent_jobs ADD CONSTRAINT db_agent_jobs_kind
+    CHECK (kind IN ('rotate_password', 'apply_role', 'drop_role', 'apply_policy_role', 'drop_policy_role'));
+-- (All kinds, also those added later: migrations replay on every start, and a narrower list here
+-- would fail against rows of a later kind.)
+
+-- ----------------------------------------------------------------------------
+-- 079_db_policy_roles.sql
+-- ----------------------------------------------------------------------------
+
+-- 079: restricted roles follow the approved database policies (docs/DB-POLICY-ROLES.md).
+--
+-- A database policy's restricted role (an_..., include/authnull_backend_role.h in ProxySQL) holds
+-- exactly the policy's privileges; ProxySQL connects to Postgres as it after MFA. These were made
+-- by did.database_job_queue jobs written when a policy was approved -- one per IAM user, all
+-- carrying one user name, never revoked or dropped. Now the backend works out which restricted
+-- roles the approved policies need on each server (did.db_policy_roles), and Claim queues the
+-- difference on the agent's queue (076): apply_policy_role, drop_policy_role. The policy's own
+-- role becomes a managed account (076), so its password is the vault's.
+--
+-- A row's role name is its shape (database, policy role, privileges, tables): a policy that
+-- changes shape needs a different role, applied while the old one is dropped once nothing needs it.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_policy_roles (
+    org_id          integer     NOT NULL,
+    tenant_id       integer     NOT NULL,
+    db_host_id      integer     NOT NULL,
+    role            text        NOT NULL,
+    database        text        NOT NULL,
+    source_role     text        NOT NULL,
+    privileges      jsonb       NOT NULL,
+    tables          jsonb       NOT NULL,
+    state           text        NOT NULL DEFAULT 'pending'
+                    CONSTRAINT db_policy_roles_state CHECK (state IN ('pending', 'active', 'dropping', 'dropped')),
+    failures        integer     NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    detail          text,
+    applied_at      timestamptz,
+    dropped_at      timestamptz,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, db_host_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS db_policy_roles_tenant ON did.db_policy_roles (org_id, tenant_id, db_host_id);
+
+ALTER TABLE did.db_agent_jobs DROP CONSTRAINT IF EXISTS db_agent_jobs_kind;
+ALTER TABLE did.db_agent_jobs ADD CONSTRAINT db_agent_jobs_kind
+    CHECK (kind IN ('rotate_password', 'apply_role', 'drop_role', 'apply_policy_role', 'drop_policy_role'));
+
+-- The old queue is done: what it was waiting to do follows from the policies now.
+DO $$
+BEGIN
+    IF to_regclass('did.database_job_queue') IS NOT NULL THEN
+        UPDATE did.database_job_queue SET status = 'SUPERSEDED', updated_at = now() WHERE status = 'QUEUED';
+    END IF;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 080_db_access_requests.sql
+-- ----------------------------------------------------------------------------
+
+-- 080: just-in-time database access: requests, approvals, grants (AUTH-235; docs/DB-ACCESS-REQUESTS.md).
+--
+-- A database policy can require approval (actions.approval). authn-service has asked the
+-- approvers during the login itself (repository/db_approval.go): a push each, the first answer
+-- deciding, all within the push's 60 seconds. This is the other way in: a person asks ahead --
+-- for how long, why, under which ticket -- the approvers are pushed and can decide in the console
+-- at any time, and an approval is a grant: logins under the policy until ends_at (or, for a
+-- policy whose validMinutes is 0, one login). The policy engine's answer to authn-service carries
+-- the person's active grant, and ProxySQL ends the session at ends_at.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_access_requests (
+    id              uuid        PRIMARY KEY,
+    org_id          integer     NOT NULL,
+    tenant_id       integer     NOT NULL,
+    policy_id       uuid        NOT NULL,
+    requester_id    integer     NOT NULL,
+    requester_email text        NOT NULL,
+    database        text        NOT NULL,
+    role            text        NOT NULL,
+    minutes         integer     NOT NULL DEFAULT 0,  -- 0: one sign-in (validMinutes 0)
+    justification   text,
+    ticket          text,
+    approvers       jsonb       NOT NULL,            -- the emails pushed, as resolved at the request
+    challenges      jsonb       NOT NULL DEFAULT '[]', -- [{email, challengeId}]
+    status          text        NOT NULL DEFAULT 'pending'
+                    CONSTRAINT db_access_requests_status
+                    CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'cancelled', 'revoked', 'used')),
+    decided_by      text,
+    decided_at      timestamptz,
+    decision_note   text,
+    ends_at         timestamptz,
+    used_at         timestamptz,
+    client_ip       text,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS db_access_requests_requester ON did.db_access_requests (org_id, lower(requester_email), policy_id, status);
+CREATE INDEX IF NOT EXISTS db_access_requests_pending ON did.db_access_requests (org_id, status) WHERE status = 'pending';
+
+-- ----------------------------------------------------------------------------
+-- 081_db_live_sessions.sql
+-- ----------------------------------------------------------------------------
+
+-- 081: live database sessions and killing them (AUTH-230; docs/DB-LIVE-SESSIONS.md).
+--
+-- The database agent reports, every few seconds, the client sessions open on its ProxySQL
+-- (stats_pgsql_processlist: id, user, database, client, how long -- never the query text). The
+-- backend keeps them here, labelled with the person, policy and access grant from the login's
+-- access-log row -- which ProxySQL's session id now joins -- and ends a row when a report no longer
+-- has it. An administrator can kill a session; revoking an access grant kills its sessions. A kill
+-- is handed to the agent in the answer to its next report, which runs ProxySQL's
+-- PGSQL KILL CONNECTION and says how it went in the report after.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_access_log ADD COLUMN IF NOT EXISTS proxy_session_id bigint;
+ALTER TABLE did.db_access_log ADD COLUMN IF NOT EXISTS grant_request_id text;
+CREATE INDEX IF NOT EXISTS db_access_log_proxy_session ON did.db_access_log (org_id, proxy_session_id, at DESC)
+    WHERE proxy_session_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS did.db_live_sessions (
+    id               bigserial   PRIMARY KEY,
+    org_id           integer     NOT NULL,
+    tenant_id        integer     NOT NULL,
+    db_host_id       integer     NOT NULL,
+    session_id       bigint      NOT NULL,  -- ProxySQL's
+    db_user          text        NOT NULL,  -- as ProxySQL connects: the policy's role or its restricted role
+    database         text,
+    client           text,
+    command          text,
+    started_at       timestamptz NOT NULL,
+    last_seen        timestamptz NOT NULL DEFAULT now(),
+    ended_at         timestamptz,
+    person_email     text,
+    policy_id        text,
+    grant_request_id text,
+    access_log_id    bigint     -- the login's did.db_access_log row; one row labels one session
+);
+CREATE UNIQUE INDEX IF NOT EXISTS db_live_sessions_open ON did.db_live_sessions (org_id, db_host_id, session_id) WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS db_live_sessions_tenant ON did.db_live_sessions (org_id, tenant_id, ended_at);
+
+CREATE TABLE IF NOT EXISTS did.db_session_kills (
+    id           uuid        PRIMARY KEY,
+    org_id       integer     NOT NULL,
+    tenant_id    integer     NOT NULL,
+    db_host_id   integer     NOT NULL,
+    session_id   bigint      NOT NULL,
+    requested_by text        NOT NULL,  -- an administrator's email, or "grant revoked"
+    reason       text,
+    status       text        NOT NULL DEFAULT 'queued'
+                 CONSTRAINT db_session_kills_status CHECK (status IN ('queued', 'sent', 'done', 'failed')),
+    error        text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    sent_at      timestamptz,
+    done_at      timestamptz
+);
+CREATE INDEX IF NOT EXISTS db_session_kills_open ON did.db_session_kills (org_id, db_host_id, status) WHERE status IN ('queued', 'sent');
+
+ALTER TABLE did.db_live_sessions ADD COLUMN IF NOT EXISTS access_log_id bigint;
+
+-- ----------------------------------------------------------------------------
+-- 082_db_session_recordings.sql
+-- ----------------------------------------------------------------------------
+
+-- 082: database session recording (AUTH-221; docs/DB-SESSION-RECORDING.md).
+--
+-- A policy with actions.session.record has ProxySQL write each statement of the session to a
+-- local spool: its text with secrets masked, whether ProxySQL let it through, rows, duration and
+-- error -- never result data. The database agent ships each closed spool file (a 5-second bucket)
+-- here and deletes it; a file sent twice adds nothing (bucket + line are unique).
+--
+-- A recording is one session: ProxySQL's session id on one server, labelled from the login's
+-- access-log row (the person, the policy, the access grant) -- the newest allowed login with that
+-- session id before the statement. Statements older than the retention are pruned.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_session_recordings (
+    id               bigserial   PRIMARY KEY,
+    org_id           integer     NOT NULL,
+    tenant_id        integer     NOT NULL,
+    db_host_id       integer     NOT NULL,
+    session_id       bigint      NOT NULL,  -- ProxySQL's
+    access_log_id    bigint,                -- the login's did.db_access_log row; NULL when none was found
+    person_email     text,
+    policy_id        text,
+    grant_request_id text,
+    db_user          text,
+    database         text,
+    client           text,
+    started_at       timestamptz NOT NULL,  -- its first recorded statement
+    last_at          timestamptz NOT NULL,
+    statements       integer     NOT NULL DEFAULT 0,
+    refused          integer     NOT NULL DEFAULT 0,
+    errors           integer     NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS db_session_recordings_key
+    ON did.db_session_recordings (org_id, db_host_id, session_id, coalesce(access_log_id, 0));
+CREATE INDEX IF NOT EXISTS db_session_recordings_tenant ON did.db_session_recordings (org_id, tenant_id, last_at DESC);
+
+CREATE TABLE IF NOT EXISTS did.db_session_statements (
+    id           bigserial   PRIMARY KEY,
+    org_id       integer     NOT NULL,
+    recording_id bigint      NOT NULL REFERENCES did.db_session_recordings (id) ON DELETE CASCADE,
+    db_host_id   integer     NOT NULL,
+    bucket       bigint      NOT NULL,  -- the spool file it came in (Unix seconds)
+    line         integer     NOT NULL,  -- its line in that file
+    at           timestamptz NOT NULL,
+    duration_ms  bigint      NOT NULL DEFAULT 0,
+    statement    text        NOT NULL,  -- masked by ProxySQL
+    allowed      boolean     NOT NULL,
+    rows_sent    bigint      NOT NULL DEFAULT 0,
+    affected     bigint      NOT NULL DEFAULT 0,
+    error        text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS db_session_statements_line ON did.db_session_statements (org_id, db_host_id, bucket, line);
+CREATE INDEX IF NOT EXISTS db_session_statements_recording ON did.db_session_statements (recording_id, at, id);
+CREATE INDEX IF NOT EXISTS db_session_statements_at ON did.db_session_statements (org_id, at);
+
+-- ----------------------------------------------------------------------------
+-- 083_aaa_console_devices.sql
+-- ----------------------------------------------------------------------------
+
+-- AuthNull AAA: devices from the console (phase 1).
+--
+-- An admin adds a network device in the console and the AuthNull AAA server (authnull-aaa) it
+-- sends logins to pulls it (POST /api/v1/aaa/config), with no edit of aaa.yml.
+--
+--   radius_servers.token_hash  hex SHA-256 of the server token, which goes into the AAA server's
+--                              app.env as SERVER_TOKEN and is shown only once. Only the config pull
+--                              needs it. NULL: the server gets no devices from the console (servers
+--                              registered before this).
+--   aaa_device_settings        what the AAA server needs for one device: which protocols it uses
+--                              and the vault secret that holds its RADIUS secret and TACACS+ key.
+--                              Goes with its device (ON DELETE CASCADE).
+--
+-- The secret is a vault secret (kind radius_device_secret, organisation level, account
+-- radius-device:<device id>), plaintext JSON {"radiusSecret": "...", "tacacsKey": "..."}.
+-- vault_secrets_kind_check is owned by 042_admin_account.sql; the new kind is added there.
+--
+-- Numbered 083, following 082_db_session_recordings.sql. Safe to replay: IF NOT EXISTS.
+
+ALTER TABLE did.radius_servers ADD COLUMN IF NOT EXISTS token_hash text NULL;
+
+CREATE TABLE IF NOT EXISTS did.aaa_device_settings (
+    device_id                      uuid        PRIMARY KEY REFERENCES did.network_devices(id) ON DELETE CASCADE,
+    org_id                         integer     NOT NULL,
+    tenant_id                      integer     NOT NULL,
+    radius                         boolean     NOT NULL,
+    tacacs                         boolean     NOT NULL,
+    allow_no_message_authenticator boolean     NOT NULL DEFAULT true,
+    vault_secret_id                uuid        NOT NULL,
+    updated_at                     timestamptz NOT NULL DEFAULT now()
+);
+
+-- ----------------------------------------------------------------------------
+-- 083_db_user_last_seen.sql
+-- ----------------------------------------------------------------------------
+
+-- 083: retire database users discovery no longer finds.
+--
+-- The agent reports every user of every database it syncs, once a minute, one at a time; it never
+-- says which users are gone. So each report now stamps last_seen, and a user nobody has reported
+-- for a while is marked DELETED -- but only on a database whose sync is evidently running (another
+-- user of it was seen recently), so an agent that is down retires nothing. A user that comes back
+-- is discovered again as a new row. (internal/database/repo/user_seen.go)
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_user ADD COLUMN IF NOT EXISTS last_seen timestamptz;
+CREATE INDEX IF NOT EXISTS db_user_db_seen ON did.db_user (db_id, last_seen) WHERE status IS DISTINCT FROM 'DELETED';
+-- Users from before 083 start the clock now: one discovery no longer finds is retired 15 minutes
+-- after this first runs. Only fills the gaps, so a replay changes nothing.
+UPDATE did.db_user SET last_seen = now() WHERE last_seen IS NULL AND status IS DISTINCT FROM 'DELETED';
+
+-- ----------------------------------------------------------------------------
+-- 084_db_hosts_port_identity.sql
+-- ----------------------------------------------------------------------------
+
+-- 084: a database server is identified by its port too (MySQL support).
+--
+-- db_hosts was unique on (org, tenant, agent VM, host VM), and every new host was stored with
+-- port 5432. So a MySQL server and a PostgreSQL server on the same VM behind the same agent shared
+-- one row, and a MySQL host was stored with the wrong port -- which the agent's "ip:port" lookups
+-- (dbvault hostIDs) then never matched. Hosts are now (org, tenant, agent VM, host VM, port); a
+-- MySQL row still holding the 5432 default gets MySQL's 3306.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+UPDATE did.db_hosts SET port = 3306
+ WHERE lower(coalesce(db_type, '')) IN ('mysql', 'mariadb') AND port = 5432;
+
+ALTER TABLE did.db_hosts DROP CONSTRAINT IF EXISTS db_hosts_org_id_tenant_id_agent_vm_ip_host_vm_ip_key;
+CREATE UNIQUE INDEX IF NOT EXISTS db_hosts_identity
+    ON did.db_hosts (org_id, tenant_id, agent_vm_ip, host_vm_ip, port) WHERE status IS DISTINCT FROM 'DELETED';
+
+-- ----------------------------------------------------------------------------
+-- 085_db_user_table_privileges.sql
+-- ----------------------------------------------------------------------------
+
+-- 085: what a database user can do on each table (the console's User Privileges page).
+--
+-- Discovery reported only database-level privileges, and for PostgreSQL only one of them, so every
+-- user read "CONNECT". The agent now sends each user's table privileges as well:
+-- [{"table": "public.orders", "privileges": ["INSERT", "SELECT"]}], kept here per user and database
+-- (a db_user row is one user on one database). repo/user_privileges.go.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_user ADD COLUMN IF NOT EXISTS table_privileges jsonb;
+
+-- ----------------------------------------------------------------------------
+-- 086_policy_root_id.sql
+-- ----------------------------------------------------------------------------
+
+-- 086: a policy keeps one identity across its versions.
+--
+-- Saving a policy inserts a new row with a new id (parent_id: the version it replaces) and marks the
+-- old row history. Everything that kept a policy id -- access requests and grants, the connection
+-- page's access state, session and recording filters -- stopped matching the policy after an edit:
+-- a JIT grant on v1 did not let a login through under v2, an approver could not decide a request made
+-- before the edit, and a second request was allowed while one was pending.
+--
+-- root_id is the policy's first version, the same on every version. A trigger fills it on every
+-- insert, whatever saves the policy: the root of the row it replaces, or its own id.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.auth_policy_json ADD COLUMN IF NOT EXISTS root_id uuid;
+
+-- Existing rows: follow parent_id back to the version that is its own parent (or has none).
+WITH RECURSIVE chain (id, root) AS (
+    SELECT id, id FROM did.auth_policy_json WHERE parent_id IS NULL OR parent_id = id
+    UNION ALL
+    SELECT p.id, chain.root FROM did.auth_policy_json p JOIN chain ON p.parent_id = chain.id AND p.id <> chain.id
+)
+UPDATE did.auth_policy_json a SET root_id = chain.root FROM chain WHERE a.id = chain.id AND a.root_id IS NULL;
+UPDATE did.auth_policy_json SET root_id = id WHERE root_id IS NULL; -- a parent that no longer exists
+
+CREATE OR REPLACE FUNCTION did.auth_policy_json_root() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.root_id IS NULL THEN
+        IF NEW.parent_id IS NOT NULL AND NEW.parent_id <> NEW.id THEN
+            SELECT coalesce(root_id, id) INTO NEW.root_id FROM did.auth_policy_json WHERE id = NEW.parent_id;
+        END IF;
+        NEW.root_id := coalesce(NEW.root_id, NEW.id);
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS auth_policy_json_root ON did.auth_policy_json;
+CREATE TRIGGER auth_policy_json_root BEFORE INSERT ON did.auth_policy_json
+    FOR EACH ROW EXECUTE FUNCTION did.auth_policy_json_root();
+
+CREATE INDEX IF NOT EXISTS auth_policy_json_root_idx ON did.auth_policy_json (root_id);
+
+-- ----------------------------------------------------------------------------
+-- 087_db_sync_last_seen.sql
+-- ----------------------------------------------------------------------------
+
+-- 087: retire databases discovery no longer finds.
+--
+-- As with users (083): each sync of a database stamps last_seen, and a database nobody has reported is
+-- marked DELETED -- which takes it, and its users, off the console (every list joins on a database
+-- that is not DELETED):
+--   - after 15 minutes, when its host's other databases are still being reported (dropped, or no
+--     longer synced -- the agent's integration-test databases on the lab);
+--   - after 30 days in any case (a server no agent serves any more), so a host that is down for a few
+--     days keeps its data. repo/db_seen.go.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_synchronization ADD COLUMN IF NOT EXISTS last_seen timestamptz;
+-- Set when retirement (not an administrator) marked it DELETED: a retired database reported again
+-- comes back; one an administrator deleted stays deleted.
+ALTER TABLE did.db_synchronization ADD COLUMN IF NOT EXISTS retired_at timestamptz;
+-- Databases from before 087 start the clock now.
+UPDATE did.db_synchronization SET last_seen = now() WHERE last_seen IS NULL AND status IS DISTINCT FROM 'DELETED';
+CREATE INDEX IF NOT EXISTS db_sync_host_seen ON did.db_synchronization (host_id, last_seen) WHERE status IS DISTINCT FROM 'DELETED';
+
+-- ----------------------------------------------------------------------------
+-- 088_db_jit_accounts.sql
+-- ----------------------------------------------------------------------------
+
+-- 088: just-in-time database accounts (docs/DB-JIT-ACCOUNTS.md).
+--
+-- An approved access request (080) gets its own database account on every server of its tenant
+-- that has the policy's database: jit_<who>_<request>, holding exactly the policy's privileges,
+-- its password in the vault and in ProxySQL, used through the proxy only. It is a console role
+-- (078) the backend creates itself: the agent's apply_role / drop_role jobs create and drop it
+-- unchanged. jit_request_id ties it to the request; owner_email is the only person who may log in
+-- as it; policy_id is the policy version it was approved under.
+--
+-- policy_fingerprint pins a request to the policy as it was approved: a later edit of the policy's
+-- database block (database, role, privileges, tables, engine) stops the grant counting.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_roles ADD COLUMN IF NOT EXISTS jit_request_id uuid;
+ALTER TABLE did.db_roles ADD COLUMN IF NOT EXISTS owner_email    text;
+ALTER TABLE did.db_roles ADD COLUMN IF NOT EXISTS policy_id      uuid;
+
+-- One account per request per server, whatever its name.
+CREATE UNIQUE INDEX IF NOT EXISTS db_roles_jit_request
+    ON did.db_roles (org_id, db_host_id, jit_request_id) WHERE jit_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS db_roles_jit_role
+    ON did.db_roles (org_id, role) WHERE jit_request_id IS NOT NULL;
+
+ALTER TABLE did.db_access_requests ADD COLUMN IF NOT EXISTS policy_fingerprint text;
+
+-- ----------------------------------------------------------------------------
+-- 089_db_no_policy_default_deny.sql
+-- ----------------------------------------------------------------------------
+
+-- 089: a database login no policy covers is refused unless the tenant chose otherwise (DBPAM-05).
+--
+-- no_policy_action (070) defaulted to 'allow', and the rotation setting (073) shares the row: a
+-- tenant that only set the rotation interval got a row reading 'allow' without ever choosing it.
+-- no_policy_action_set records a choice made in the console (nopolicy.Set). A row without one
+-- reads as the default, which is now deny.
+--
+-- Rows written before this migration: 'mfa' and 'deny' were surely chosen and count as set;
+-- 'allow' cannot be told from the old default and does not (an administrator who wants it chooses
+-- it again). That runs once, when the column is added; replays leave later choices alone.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+DO $$
+BEGIN
+    IF to_regclass('did.database_access_settings') IS NULL THEN
+        RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'did'
+                   AND table_name = 'database_access_settings' AND column_name = 'no_policy_action_set') THEN
+        ALTER TABLE did.database_access_settings ADD COLUMN no_policy_action_set boolean NOT NULL DEFAULT false;
+        UPDATE did.database_access_settings SET no_policy_action_set = true WHERE no_policy_action IN ('mfa', 'deny');
+    END IF;
+    ALTER TABLE did.database_access_settings ALTER COLUMN no_policy_action SET DEFAULT 'deny';
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 090_db_access_extensions.sql
+-- ----------------------------------------------------------------------------
+
+-- 090: extending a grant in force (docs/DB-ACCESS-REQUESTS.md, "Extending a grant").
+--
+-- An extension is an access request (080) that names the grant it extends (extends_request_id):
+-- the same policy, approvers and checks; approving it moves that grant's end -- its just-in-time
+-- account's expiry (088) and the end of its open sessions with it. An approved extension keeps no
+-- end of its own (ends_at NULL), so it is never a grant itself.
+--
+-- db_session_ends carries a new end to the agent for an open ProxySQL session, as
+-- db_session_kills (081) carries a kill: queued, handed out with the agent's next session report,
+-- done or failed with the report after.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_access_requests ADD COLUMN IF NOT EXISTS extends_request_id uuid;
+CREATE INDEX IF NOT EXISTS db_access_requests_extends
+    ON did.db_access_requests (org_id, extends_request_id) WHERE extends_request_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS did.db_session_ends (
+    id          uuid        PRIMARY KEY,
+    org_id      integer     NOT NULL,
+    tenant_id   integer     NOT NULL,
+    db_host_id  integer     NOT NULL,
+    session_id  bigint      NOT NULL,  -- ProxySQL's
+    ends_at     timestamptz NOT NULL,
+    request_id  uuid        NOT NULL,  -- the grant it extends
+    status      text        NOT NULL DEFAULT 'queued'
+                CONSTRAINT db_session_ends_status CHECK (status IN ('queued', 'sent', 'done', 'failed')),
+    error       text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    sent_at     timestamptz,
+    done_at     timestamptz
+);
+CREATE INDEX IF NOT EXISTS db_session_ends_open ON did.db_session_ends (org_id, db_host_id, status);
+
+-- ----------------------------------------------------------------------------
+-- 090_mfa_responder_ip.sql
+-- ----------------------------------------------------------------------------
+
+-- 090: where the phone was when it answered a push.
+--
+-- The respond endpoints now record the answering phone's address (X-Real-IP from the bundled
+-- nginx). authn-service reads it with the verdict, looks up its country, and uses it for the
+-- "approver must be in" policy action and as the person's last known location for logins that
+-- arrive from an internal address. Requester columns (client_ip, geo_*) are unchanged.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.mfa_push_activity ADD COLUMN IF NOT EXISTS responder_ip text;
+ALTER TABLE did.ad_mfa_challenges ADD COLUMN IF NOT EXISTS responder_ip text;
+
+-- ----------------------------------------------------------------------------
+-- 091_ca_decision_log.sql
+-- ----------------------------------------------------------------------------
+
+-- 091: the conditional access decision log -- every policy decision the engine makes, on every
+-- product, with each policy's own result (Entra's sign-in log, Conditional Access tab).
+--
+-- Written by authnull-service at decision time (internal/policy/decisionlog), one row per
+-- question: before the push, and again after it when there was one (phase). evaluations is the
+-- list of policies that name the person, enforced and report-only, with what each did
+-- (dto.PolicyEvaluation). Append-only; read by administrators (/policyService/decisionLog/list).
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.ca_decision_log (
+    id               uuid PRIMARY KEY,
+    org_id           integer NOT NULL,
+    tenant_id        integer NOT NULL DEFAULT 0,
+    channel          text NOT NULL,             -- DATABASE, SSH, AD, RADIUS, APP
+    phase            text NOT NULL,             -- before_push, after_push
+    subject          text NOT NULL DEFAULT '',  -- email or account
+    resource         text NOT NULL DEFAULT '',  -- what was reached, per channel
+    source_ip        text NOT NULL DEFAULT '',
+    country          text NOT NULL DEFAULT '',
+    risk_level       text NOT NULL DEFAULT '',
+    decision         text NOT NULL,             -- allow, mfa_required, block, none (no policy)
+    condition_denied boolean NOT NULL DEFAULT false,
+    policy_id        text NOT NULL DEFAULT '',
+    policy_name      text NOT NULL DEFAULT '',
+    reason           text NOT NULL DEFAULT '',
+    evaluations      jsonb NOT NULL DEFAULT '[]',
+    created_at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ca_decision_log_org_time ON did.ca_decision_log (org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ca_decision_log_subject ON did.ca_decision_log (org_id, lower(subject), created_at DESC);
+
+-- ----------------------------------------------------------------------------
+-- 091_db_privilege_drift.sql
+-- ----------------------------------------------------------------------------
+
+-- 091: privilege drift on AuthNull-managed roles (DBPAM-44; docs/DB-PRIVILEGE-DRIFT.md).
+--
+-- AuthNull knows what it granted its own roles -- console-created and just-in-time accounts
+-- (db_roles.applied_grants, 078/088) and policies' restricted roles (db_policy_roles, 079) -- and
+-- discovery reports what each login holds (db_user.privilege_level, table_privileges; 072/085).
+-- A difference made outside AuthNull is drift: privileges added by hand (extra), table privileges
+-- taken away (missing), or the role made an administrator (escalated). Each is a finding, open
+-- while discovery still sees it, resolved when it no longer does.
+--
+-- privilege_drift_fix (per tenant, off by default) re-applies a console or just-in-time role's
+-- grants when it drifts, which revokes what was added by hand.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_privilege_drift (
+    id          bigserial   PRIMARY KEY,
+    org_id      integer     NOT NULL,
+    tenant_id   integer     NOT NULL,
+    db_host_id  integer     NOT NULL,
+    role        text        NOT NULL,
+    database    text        NOT NULL,
+    managed_by  text        NOT NULL CONSTRAINT db_privilege_drift_managed_by CHECK (managed_by IN ('console', 'jit', 'policy')),
+    findings    jsonb       NOT NULL,
+    status      text        NOT NULL DEFAULT 'open' CONSTRAINT db_privilege_drift_status CHECK (status IN ('open', 'resolved')),
+    first_seen  timestamptz NOT NULL DEFAULT now(),
+    last_seen   timestamptz NOT NULL DEFAULT now(),
+    resolved_at timestamptz,
+    fixed_at    timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS db_privilege_drift_open
+    ON did.db_privilege_drift (org_id, db_host_id, role, database) WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS db_privilege_drift_tenant ON did.db_privilege_drift (org_id, tenant_id, status);
+
+DO $$
+BEGIN
+    IF to_regclass('did.database_access_settings') IS NOT NULL THEN
+        ALTER TABLE did.database_access_settings ADD COLUMN IF NOT EXISTS privilege_drift_fix boolean NOT NULL DEFAULT false;
+    END IF;
+END $$;
+
+-- ----------------------------------------------------------------------------
+-- 092_ca_named_locations.sql
+-- ----------------------------------------------------------------------------
+
+-- 092: named locations for conditional access (Entra's): a name, IP ranges and/or countries, and
+-- whether the location is trusted. Policies reference them by id in conditions.location
+-- (internal/policy/conditions/location.go); managed at /policyService/namedLocations/*.
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.ca_named_locations (
+    id         uuid PRIMARY KEY,
+    org_id     integer NOT NULL,
+    tenant_id  integer NOT NULL DEFAULT 0,
+    name       text NOT NULL,
+    ip_ranges  jsonb NOT NULL DEFAULT '[]',
+    countries  jsonb NOT NULL DEFAULT '[]',
+    trusted    boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by integer
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ca_named_locations_name ON did.ca_named_locations (org_id, tenant_id, lower(name));
+
+-- ----------------------------------------------------------------------------
+-- 092_db_elevation.sql
+-- ----------------------------------------------------------------------------
+
+-- 092: privilege elevation on a person's own database account (docs/DB-ELEVATION.md).
+--
+-- db_account_owners: an administrator says whose an account is. AuthNull takes the account's
+-- password over (076) and only its owner may log in as it, through the proxy.
+--
+-- db_elevations: an approved request (080) under an elevation policy (database.access_mode =
+-- 'elevate') gives each account its requester owns, on every server of the tenant with the
+-- policy's database, more for the access window: the policy's role granted to it, or a bundle of
+-- the policy's privileges. payload is what the agent's elevate / unelevate jobs carry.
+--
+--   granting -> active -> revoking -> revoked; granting -> failed (never granted) -> revoked
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+CREATE TABLE IF NOT EXISTS did.db_account_owners (
+    org_id      integer     NOT NULL,
+    tenant_id   integer     NOT NULL,
+    db_host_id  integer     NOT NULL,
+    role        text        NOT NULL,
+    owner_email text        NOT NULL,
+    set_by      integer,
+    set_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, db_host_id, role)
+);
+
+CREATE INDEX IF NOT EXISTS db_account_owners_owner ON did.db_account_owners (org_id, owner_email);
+CREATE INDEX IF NOT EXISTS db_account_owners_role ON did.db_account_owners (org_id, role);
+
+CREATE TABLE IF NOT EXISTS did.db_elevations (
+    id              uuid        PRIMARY KEY,
+    org_id          integer     NOT NULL,
+    tenant_id       integer     NOT NULL,
+    db_host_id      integer     NOT NULL,
+    account         text        NOT NULL,
+    owner_email     text        NOT NULL,
+    request_id      uuid        NOT NULL,
+    policy_id       uuid,
+    payload         jsonb       NOT NULL,
+    state           text        NOT NULL DEFAULT 'granting'
+                    CONSTRAINT db_elevations_state CHECK (state IN ('granting', 'active', 'revoking', 'revoked', 'failed')),
+    failures        integer     NOT NULL DEFAULT 0,
+    next_attempt_at timestamptz NOT NULL DEFAULT now(),
+    detail          text,
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    granted_at      timestamptz,
+    revoked_at      timestamptz,
+    UNIQUE (org_id, db_host_id, account, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS db_elevations_open ON did.db_elevations (org_id, state)
+    WHERE state IN ('granting', 'active', 'revoking');
+CREATE INDEX IF NOT EXISTS db_elevations_request ON did.db_elevations (org_id, request_id);
+
+ALTER TABLE did.db_agent_jobs DROP CONSTRAINT IF EXISTS db_agent_jobs_kind;
+ALTER TABLE did.db_agent_jobs ADD CONSTRAINT db_agent_jobs_kind
+    CHECK (kind IN ('rotate_password', 'apply_role', 'drop_role', 'apply_policy_role', 'drop_policy_role',
+                    'elevate', 'unelevate'));
+
+-- ----------------------------------------------------------------------------
+-- 093_decision_id_links.sql
+-- ----------------------------------------------------------------------------
+
+-- 093: link each product's log row to its conditional access decision.
+--
+-- authn-service stores the engine's decisionId (did.ca_decision_log.id, the answer before any
+-- push) on the rows it writes: did.db_access_log (database logins) and did.auth_log (SSH, RADIUS,
+-- app and the database summary rows). The answer after the push points back to it in
+-- related_decision_id, so a sign-in's two steps are found together
+-- (/policyService/decisionLog/list {"decisionId"}).
+--
+-- Lives in each org's database. Replayed on every start: idempotent.
+
+ALTER TABLE did.db_access_log   ADD COLUMN IF NOT EXISTS decision_id text;
+ALTER TABLE did.auth_log        ADD COLUMN IF NOT EXISTS decision_id text;
+ALTER TABLE did.ca_decision_log ADD COLUMN IF NOT EXISTS related_decision_id text;
+CREATE INDEX IF NOT EXISTS ca_decision_log_related ON did.ca_decision_log (related_decision_id) WHERE related_decision_id IS NOT NULL;
 
 --
 -- PostgreSQL database dump complete

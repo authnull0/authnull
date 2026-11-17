@@ -33,7 +33,11 @@ ALTER TABLE did.vault_secrets ADD CONSTRAINT vault_secrets_kind_check
                     -- 053: the organisation's SSH user CA private key.
                     'ssh_user_ca',
                     -- 057: a tenant's ID token signing key (app identity provider).
-                    'idp_signing_key'));
+                    'idp_signing_key',
+                    -- 076: a database role's password, current and staged.
+                    'db_password', 'db_password_staged',
+                    -- 083: a network device's RADIUS secret and TACACS+ key (AuthNull AAA).
+                    'radius_device_secret'));
 
 ALTER TABLE did.gateway_jobs DROP CONSTRAINT IF EXISTS gateway_jobs_kind_check;
 ALTER TABLE did.gateway_jobs ADD CONSTRAINT gateway_jobs_kind_check
